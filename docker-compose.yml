@@ -1,0 +1,145 @@
+# ===========================================================================
+# AIOps Testbench — Docker Compose (Box 1)
+# ===========================================================================
+#
+# Services:
+#   1. target-service  — FastAPI app (the system we observe)
+#   2. postgres         — database for target-service
+#   3. prometheus       — scrapes metrics from target-service and cAdvisor
+#   4. cadvisor         — exposes Docker container-level metrics
+#   5. load-generator   — sends continuous HTTP traffic to target-service
+#
+# Network:
+#   All services are on the same Docker bridge network ("testbench-net").
+#   Inside this network, containers reach each other by SERVICE NAME:
+#       target-service:8000     (not localhost:8000)
+#       postgres:5432           (not localhost:5432)
+#       cadvisor:8080           (not localhost:8080)
+#
+#   From your HOST machine (browser), you use the port mappings:
+#       localhost:8000  →  target-service
+#       localhost:9090  →  prometheus
+#       localhost:3000  →  grafana
+#
+# Start everything:
+#   docker compose up --build
+#
+# ===========================================================================
+
+services:
+
+  # -------------------------------------------------------------------------
+  # PostgreSQL — the database
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:alpine
+    environment:
+      POSTGRES_USER: testbench
+      POSTGRES_PASSWORD: testbench
+      POSTGRES_DB: testbench
+    volumes:
+      - pgdata:/var/lib/postgresql
+    networks:
+      - testbench-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testbench"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------------------------------------------------
+  # Target Service — the FastAPI application we are observing
+  # -------------------------------------------------------------------------
+  target-service:
+    build: ./target-service
+    ports:
+      - "8000:8000"     # host:container — so you can open localhost:8000
+    environment:
+      DATABASE_URL: "postgresql://testbench:testbench@postgres:5432/testbench"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - testbench-net
+
+  # -------------------------------------------------------------------------
+  # Prometheus — metrics collection and storage
+  # -------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"     # host:container — so you can open localhost:9090
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    depends_on:
+      - target-service
+      - cadvisor
+    networks:
+      - testbench-net
+
+  # -------------------------------------------------------------------------
+  # cAdvisor — container-level metrics (CPU, memory, network, filesystem)
+  # -------------------------------------------------------------------------
+  # cAdvisor needs access to the Docker socket and cgroup filesystem to
+  # read container resource usage. The volume mounts below are standard
+  # for running cAdvisor inside Docker.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    ports:
+      - "8080:8080"     # optional: lets you browse cAdvisor UI on localhost:8080
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    privileged: true    # required for cAdvisor to read cgroup data
+    command:
+      - "--docker_only=true"
+    networks:
+      - testbench-net
+
+
+  #===Grafana=============================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - '3000:3000'
+    depends_on:
+      -  prometheus
+    networks:
+    - testbench-net
+
+
+  # -------------------------------------------------------------------------
+  # Load Generator — sends continuous HTTP requests to target-service
+  # -------------------------------------------------------------------------
+  load-generator:
+    build: ./load-generator
+    environment:
+      TARGET_URL: "http://target-service:8000"
+      RPS: "5"           # requests per second — change to 50 for high load
+    depends_on:
+      - target-service
+    networks:
+      - testbench-net
+    restart: on-failure
+
+# ---------------------------------------------------------------------------
+# Named volumes
+# ---------------------------------------------------------------------------
+volumes:
+  pgdata:             # persists PostgreSQL data across restarts
+  prometheus-data:    # persists Prometheus time-series data
+
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+networks:
+  testbench-net:
+    driver: bridge

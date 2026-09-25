@@ -1,0 +1,32 @@
+# ===========================================================================
+# Prometheus Configuration — AIOps Testbench
+# ===========================================================================
+# Prometheus scrapes two targets:
+#
+#   1. target-service:8000/metrics  →  application-level metrics
+#      (request count, latency, errors, active requests, DB queries)
+#
+#   2. cadvisor:8080/metrics        →  container-level metrics
+#      (CPU, memory, network, filesystem for every Docker container)
+#
+# Both targets use Docker Compose service names, NOT localhost.
+# Inside the Docker network, containers reach each other by service name.
+# ===========================================================================
+
+global:
+  scrape_interval: 5s      # How often Prometheus pulls metrics
+  evaluation_interval: 5s  # How often Prometheus evaluates rules (unused for now)
+
+scrape_configs:
+
+  # --- Application metrics (FastAPI) ---
+  - job_name: "target-service"
+    static_configs:
+      - targets: ["target-service:8000"]
+    # Prometheus will GET http://target-service:8000/metrics every 15s
+
+  # --- Container metrics (cAdvisor) ---
+  - job_name: "cadvisor"
+    static_configs:
+      - targets: ["cadvisor:8080"]
+    # Prometheus will GET http://cadvisor:8080/metrics every 15s
